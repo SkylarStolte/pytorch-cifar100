@@ -24,7 +24,39 @@ from torchmetrics.classification import MulticlassCalibrationError
 from reliability_diagrams import *
 import pandas as pd
 
+from DominoLoss_Multiply import DOMINO_Loss_Multiply
+from DominoLoss import DOMINO_Loss
+from hardl1ace import *
+
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, classification_report
+
+# Temperature scaling class
+class TemperatureScaling(nn.Module):
+    def __init__(self, net):
+        super(TemperatureScaling, self).__init__()
+        self.net = net
+        self.temperature = nn.Parameter(torch.ones(1) * 1.5).cuda()
+
+    def forward(self, logits):
+        return logits.cuda() / self.temperature.cuda()
+
+def temperature_scaling(logits, labels):
+    net = TemperatureScaling(logits)
+    optimizer = optim.LBFGS([net.temperature], lr=0.01, max_iter=50)
+
+    def loss_fn():
+        #loss = nn.CrossEntropyLoss()
+        #return loss(net(logits), labels)
+        if args.loss_func=='CE' or args.loss_func=='ACE':
+            loss = loss_function(net(logits), labels)
+        elif args.loss_func=='DOMINO':
+            loss = loss_function(net(logits), labels, matrix_penalty,a,b)
+        elif args.loss_func=='DOMINO_Multiply':
+            loss = loss_function(net(logits), labels, matrix_penalty,1)
+        return loss
+        
+    optimizer.step(loss_fn)
+    return net.temperature.item()
 
 if __name__ == '__main__':
 
@@ -33,7 +65,31 @@ if __name__ == '__main__':
     parser.add_argument('-weights', type=str, required=True, help='the weights file you want to test')
     parser.add_argument('-gpu', action='store_true', default=False, help='use gpu or not')
     parser.add_argument('-b', type=int, default=16, help='batch size for dataloader')
+    parser.add_argument('-loss_func', type=str, default='CE', help='choose loss function')
+    parser.add_argument('-temperature_scaling', action='store_true', default=False, help='use temperature scaling or not')
+    parser.add_argument('-temp', type=int, default=1.5, help='optimal temp from training')
     args = parser.parse_args()
+    
+    #####################################################################################
+    
+    matrix_dir = '/blue/ruogu.fang/skylastolte4444/Airplanes/Diffusion/'
+    matrix_vals = pd.read_csv(matrix_dir + 'cifar100_matrix.csv', index_col=None, header=None) #'similarity.csv', index_col=0, header=0)#'cifar100_matrix.csv', index_col=None, header=None) 
+    matrix_penalty = 3.0 * torch.from_numpy(matrix_vals.to_numpy())
+    matrix_penalty = matrix_penalty.float().cuda()
+    #print(matrix_penalty.shape)
+    
+    if args.loss_func=='CE':
+        loss_function = nn.CrossEntropyLoss()
+    elif args.loss_func=='DOMINO':
+        loss_function = DOMINO_Loss()
+        a = 0.8
+        b = 0.3
+    elif args.loss_func=='DOMINO_Multiply':
+        loss_function = DOMINO_Loss_Multiply()
+    elif args.loss_func=='ACE':   
+        loss_function = HardL1ACEandCELoss(to_onehot_y=True)
+    
+    #####################################################################################
 
     net = get_network(args)
 
@@ -47,7 +103,26 @@ if __name__ == '__main__':
 
     net.load_state_dict(torch.load(args.weights))
     print(net)
+    #state_dict = net.state_dict()
+    
+    #new_state_dict = {}
+    #for key, value in state_dict.items():
+    #    # Add 'net.' prefix to each key
+    #    new_key = 'net.' + key
+    #    new_state_dict[new_key] = value
+    
+    # Add the 'temperature' key with a placeholder value (or set it to your desired value)
+    #new_state_dict['temperature'] = torch.tensor(1.5)
+    
+    #net_temp = net
+    #net_temp.load_state_dict(new_state_dict)
+    
+    net_temp = TemperatureScaling(net)
+    optimal_temperature = args.temp
+    net_temp.temperature = nn.Parameter(torch.ones(1) * optimal_temperature)
+    
     net.eval()
+    net_temp.eval()
 
     correct_1 = 0.0
     correct_5 = 0.0
@@ -63,8 +138,12 @@ if __name__ == '__main__':
                 print('GPU INFO.....')
                 print(torch.cuda.memory_summary(), end='')
 
-
-            output = net(image)
+            if args.temperature_scaling:
+                output = net_temp(net(image))
+                print('Used Temperature Scaling')
+            else:
+                output = net(image)
+                print('No Temperature Scaling')
             
             
             if n_iter==0:
@@ -80,7 +159,7 @@ if __name__ == '__main__':
             _, pred = output.topk(5, 1, largest=True, sorted=True)
 
             label = label.view(label.size(0), -1).expand_as(pred)
-            correct = pred.eq(label).float()
+            correct = pred.cuda().eq(label.cuda()).float()
 
             #compute top 5
             correct_5 += correct[:, :5].sum()
