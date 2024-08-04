@@ -19,12 +19,12 @@ import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from torch.utils.tensorboard import SummaryWriter
 
 from conf import settings
 from utils import get_network, get_training_dataloader, get_test_dataloader, WarmUpLR, \
-    most_recent_folder, most_recent_weights, last_epoch, best_acc_weights
+    most_recent_folder, most_recent_weights, last_epoch, best_acc_weights, get_train_val_dataloaders
 
 import pandas as pd
 from DominoLoss_Multiply import DOMINO_Loss_Multiply
@@ -189,33 +189,72 @@ def eval_training(epoch=0, tb=True):
 @torch.no_grad()
 def eval_training_temp(epoch=0, tb=True):
     
-    # Temperature scaling class
-    class TemperatureScaling(nn.Module):
-        def __init__(self, net):
-            super(TemperatureScaling, self).__init__()
-            self.net = net
-            self.temperature = nn.Parameter(torch.ones(1) * 1.5).cuda()
+    class TemperatureScaler(nn.Module):
+        def __init__(self):
+            super(TemperatureScaler, self).__init__()
+            self.temperature = nn.Parameter(torch.ones(1) * 1.5, requires_grad=True)
 
         def forward(self, logits):
-            return logits.cuda() / self.temperature.cuda()
+            return logits / self.temperature
 
-    def temperature_scaling(logits, labels):
-        net = TemperatureScaling(logits)
-        optimizer = optim.LBFGS([net.temperature], lr=0.01, max_iter=50)
-
-        def loss_fn():
-            #loss = nn.CrossEntropyLoss()
-            #return loss(net(logits), labels)
-            if args.loss_func=='CE' or args.loss_func=='ACE':
-                loss = loss_function(net(logits), labels)
-            elif args.loss_func=='DOMINO':
-                loss = loss_function(net(logits), labels, matrix_penalty,a,b)
-            elif args.loss_func=='DOMINO_Multiply':
-                loss = loss_function(net(logits), labels, matrix_penalty,1)
-            return loss
+        def set_temperature(self, val_loader, model):
+            model.eval()
+            nll_criterion = nn.CrossEntropyLoss().cuda()
+            #nll_criterion.requires_grad = True
         
-        optimizer.step(loss_fn)
-        return net.temperature.item()
+            logits_list = []
+            labels_list = []
+            #logits_list = torch.
+
+            # Collect all logits and labels
+            #counter = 0
+            with torch.no_grad():
+                for input, label in cifar100_validation_loader: #val_loader:
+                    input, label = input.cuda(), label.cuda()
+                    logits = model(input)
+                    logits_list.append(logits)
+                    labels_list.append(label)
+                    
+                    #if counter==0:
+                    #    logits_all = logits.cuda()
+                    #    labels_all = label.cuda()
+                    #else:
+                    #    logits_all = torch.cat([logits_all, logits]).cuda()
+                        #logits.requires_grad=True
+                        #labels = torch.cat(labels_list).cuda()
+                    #    labels_all = torch.cat([labels_all, label]).cuda()
+                        #labels.requires_grad=True
+                    #counter += 1
+                    
+            logits = torch.cat(logits_list).cuda()
+            labels = torch.cat(labels_list).cuda()
+
+            # Reset requires_grad for temperature
+            self.temperature.requires_grad = True
+
+            # Optimizer for temperature scaling
+            #optimizer = optim.Adam([self.temperature], lr=0.01)
+
+            #for _ in range(500):  # Using a simple loop for optimization
+            #    optimizer.zero_grad()
+                #loss = nll_criterion(self.forward(logits_all), labels_all)
+            #    logits_fin = logits/self.temperature
+            #    logits_fin.requires_grad = True
+            #    loss = nll_criterion(logits_fin, labels)
+            #    loss.backward()
+            #    optimizer.step()
+            
+            # Next: optimize the temperature w.r.t. NLL
+            optimizer = optim.LBFGS([self.temperature], lr=0.01, max_iter=500)
+
+            def eval():
+                optimizer.zero_grad()
+                loss = nll_criterion(self.forward(logits), labels)
+                loss.backward()
+                return loss
+            optimizer.step(eval)
+
+            print(f'Optimal temperature: {self.temperature.item()}')
 
     start = time.time()
     net.eval()
@@ -223,34 +262,42 @@ def eval_training_temp(epoch=0, tb=True):
     test_loss = 0.0 # cost function error
     correct = 0.0
     
-    outputs_list = []
-    labels_list = []
-    for (images, labels) in cifar100_test_loader:
+    #outputs_list = []
+    #labels_list = []
+    #for (images, labels) in cifar100_test_loader:
 
-        if args.gpu:
-            images = images.cuda()
-            labels = labels.cuda()
+    #    if args.gpu:
+    #        images = images.cuda()
+    #        labels = labels.cuda()
             
-        outputs = net(images)
+    #    outputs = net(images)
         
-        outputs_list.append(outputs)
-        labels_list.append(labels)
-    outputs = torch.cat(outputs_list)
-    labels = torch.cat(labels_list)
+    #    outputs_list.append(outputs)
+    #    labels_list.append(labels)
+    #outputs = torch.cat(outputs_list)
+    #labels = torch.cat(labels_list)
 
         ##loss = loss_function(outputs, labels)
         #loss = loss_function(outputs, labels, matrix_penalty, 1)#a, b)
         
     # Apply temperature scaling
-    optimal_temperature = temperature_scaling(outputs, labels)
-    print(f"Optimal Temperature: {optimal_temperature}")
+    #optimal_temperature = temperature_scaling()#outputs, labels)
+    #print(f"Optimal Temperature: {optimal_temperature}")
 
     # Calibrate the model
-    temperature_net = TemperatureScaling(net)
-    temperature_net.temperature = nn.Parameter(torch.ones(1) * optimal_temperature)
+    #temperature_net = TemperatureScaling(net)
+    #temperature_net.temperature = nn.Parameter(torch.ones(1) * optimal_temperature)
+    
+    temperature_scaler = TemperatureScaler().cuda()
+    temperature_scaler.set_temperature(cifar100_validation_loader, net)
+    
+    def inference_with_temperature_scaling(input):
+        logits = net(input)
+        scaled_logits = temperature_scaler(logits)
+        return scaled_logits
     
     net.eval()
-    temperature_net.eval()
+    #temperature_net.eval()
     
     for (images, labels) in cifar100_test_loader:
 
@@ -258,7 +305,10 @@ def eval_training_temp(epoch=0, tb=True):
             images = images.cuda()
             labels = labels.cuda()
             
-        outputs = temperature_net(net(images))
+
+        outputs = inference_with_temperature_scaling(images)
+            
+        #outputs = temperature_net(net(images))
         
         ######################################################################
         
@@ -296,7 +346,7 @@ def eval_training_temp(epoch=0, tb=True):
         writer.add_scalar('Test/Average loss', test_loss / len(cifar100_test_loader.dataset), epoch)
         writer.add_scalar('Test/Accuracy', correct.float() / len(cifar100_test_loader.dataset), epoch)
 
-    return (correct.float() / len(cifar100_test_loader.dataset)), temperature_net
+    return (correct.float() / len(cifar100_test_loader.dataset))#, temperature_net
 
 if __name__ == '__main__':
 
@@ -315,7 +365,15 @@ if __name__ == '__main__':
     print(f"Epoch: {settings.EPOCH}")
 
     #data preprocessing:
-    cifar100_training_loader = get_training_dataloader(
+    #cifar100_training_loader = get_training_dataloader(
+    #    settings.CIFAR100_TRAIN_MEAN,
+    #    settings.CIFAR100_TRAIN_STD,
+    #    num_workers=4,
+    #    batch_size=args.b,
+    #    shuffle=True
+    #)
+    
+    cifar100_training_loader, cifar100_validation_loader = get_train_val_dataloaders(
         settings.CIFAR100_TRAIN_MEAN,
         settings.CIFAR100_TRAIN_STD,
         num_workers=4,
@@ -418,7 +476,7 @@ if __name__ == '__main__':
         train(epoch)
         
         if epoch==settings.EPOCH:
-            acc, new_net = eval_training_temp(epoch)
+            acc = eval_training_temp(epoch)
         else:
             acc = eval_training(epoch)
 
@@ -435,9 +493,9 @@ if __name__ == '__main__':
             print('saving weights file to {}'.format(weights_path))
             torch.save(net.state_dict(), weights_path)
             
-        if epoch==settings.EPOCH:
-            weights_path = checkpoint_path.format(net='Temp', epoch=epoch, type='regular')
-            print('saving weights file to {}'.format(weights_path))
-            torch.save(new_net.state_dict(), weights_path)
+        #if epoch==settings.EPOCH:
+        #    weights_path = checkpoint_path.format(net='Temp', epoch=epoch, type='regular')
+        #    print('saving weights file to {}'.format(weights_path))
+        #    torch.save(new_net.state_dict(), weights_path)
 
     writer.close()

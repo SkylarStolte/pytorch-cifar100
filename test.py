@@ -30,33 +30,36 @@ from hardl1ace import *
 
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, classification_report
 
-# Temperature scaling class
-class TemperatureScaling(nn.Module):
-    def __init__(self, net):
-        super(TemperatureScaling, self).__init__()
-        self.net = net
-        self.temperature = nn.Parameter(torch.ones(1) * 1.5).cuda()
+class TemperatureScaler(nn.Module):
+    def __init__(self, temperature=1.0):
+        super(TemperatureScaler, self).__init__()
+        self.temperature = nn.Parameter(torch.ones(1) * temperature, requires_grad=False)
 
     def forward(self, logits):
-        return logits.cuda() / self.temperature.cuda()
+        return logits / self.temperature
 
-def temperature_scaling(logits, labels):
-    net = TemperatureScaling(logits)
-    optimizer = optim.LBFGS([net.temperature], lr=0.01, max_iter=50)
+    def set_temperature(self, temperature):
+        self.temperature.data.fill_(temperature)
 
-    def loss_fn():
-        #loss = nn.CrossEntropyLoss()
-        #return loss(net(logits), labels)
-        if args.loss_func=='CE' or args.loss_func=='ACE':
-            loss = loss_function(net(logits), labels)
-        elif args.loss_func=='DOMINO':
-            loss = loss_function(net(logits), labels, matrix_penalty,a,b)
-        elif args.loss_func=='DOMINO_Multiply':
-            loss = loss_function(net(logits), labels, matrix_penalty,1)
-        return loss
-        
-    optimizer.step(loss_fn)
-    return net.temperature.item()
+# Usage example
+def apply_temperature_scaling(val_loader, model, optimal_temperature):
+    model.eval()
+    temperature_scaler = TemperatureScaler()
+    temperature_scaler.set_temperature(optimal_temperature)
+    
+    logits_list = []
+    labels_list = []
+
+    with torch.no_grad():
+        for input, label in val_loader:
+            input, label = input.cuda(), label.cuda()
+            logits = model(input)
+            scaled_logits = temperature_scaler(logits)
+            logits_list.append(scaled_logits)
+            labels_list.append(label)
+
+    logits = torch.cat(logits_list).cuda()
+    labels = torch.cat(labels_list).cuda()
 
 if __name__ == '__main__':
 
@@ -67,7 +70,7 @@ if __name__ == '__main__':
     parser.add_argument('-b', type=int, default=16, help='batch size for dataloader')
     parser.add_argument('-loss_func', type=str, default='CE', help='choose loss function')
     parser.add_argument('-temperature_scaling', action='store_true', default=False, help='use temperature scaling or not')
-    parser.add_argument('-temp', type=int, default=1.5, help='optimal temp from training')
+    parser.add_argument('-temp', type=float, default=1.5, help='optimal temp from training')
     args = parser.parse_args()
     
     #####################################################################################
@@ -117,12 +120,13 @@ if __name__ == '__main__':
     #net_temp = net
     #net_temp.load_state_dict(new_state_dict)
     
-    net_temp = TemperatureScaling(net)
+    #net_temp = TemperatureScaler(net)
     optimal_temperature = args.temp
-    net_temp.temperature = nn.Parameter(torch.ones(1) * optimal_temperature)
+    temp = TemperatureScaler(optimal_temperature)
+    #net_temp.temperature = nn.Parameter(torch.ones(1) * optimal_temperature)
     
     net.eval()
-    net_temp.eval()
+    #net_temp.eval()
 
     correct_1 = 0.0
     correct_5 = 0.0
@@ -139,7 +143,7 @@ if __name__ == '__main__':
                 print(torch.cuda.memory_summary(), end='')
 
             if args.temperature_scaling:
-                output = net_temp(net(image))
+                output = temp(net(image))
                 print('Used Temperature Scaling')
             else:
                 output = net(image)
