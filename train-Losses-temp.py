@@ -31,42 +31,6 @@ from DominoLoss_Multiply import DOMINO_Loss_Multiply
 from DominoLoss import DOMINO_Loss
 from hardl1ace import *
 
-## Temperature scaling class
-#class TemperatureScaling(nn.Module):
-#    def __init__(self, net):
-#        super(TemperatureScaling, self).__init__()
-#        self.net = net
-#        self.temperature = nn.Parameter(torch.ones(1) * 1.5)
-
-#    def forward(self, logits):
-#        return logits / self.temperature
-
-#def temperature_scaling(logits, labels):
-#    net = TemperatureScaling(logits)
-#    optimizer = optim.LBFGS([net.temperature], lr=0.01, max_iter=50)
-
-#    def loss_fn():
-#        loss = nn.CrossEntropyLoss()
-#        return loss(net(logits), labels)
-        
-        #if args.loss_func=='CE':
-        #    loss_function = nn.CrossEntropyLoss()
-        #    loss = loss_function(outputs, labels)
-        #elif args.loss_func=='DOMINO':
-        #    loss_function = DOMINO_Loss()
-        #    a = 0.8
-        #    b = 0.3
-        #    loss = loss_function(outputs, labels, matrix_penalty,a,b)
-        #elif args.loss_func=='DOMINO_Multiply':
-        #    loss_function = DOMINO_Loss_Multiply()
-        #    loss = loss_function(outputs, labels, matrix_penalty,1)
-        #elif args.loss_func=='ACE':   
-        #    loss_function = HardL1ACEandCELoss(to_onehot_y=True)
-        #    loss = loss_function(outputs, labels)
-
-    #optimizer.step(loss_fn)
-    #return net.temperature.item()
-
 def train(epoch):
 
     start = time.time()
